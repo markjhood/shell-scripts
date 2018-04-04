@@ -1,0 +1,78 @@
+#!/bin/bash
+# *** needs work for SlugOS!! ***
+# qserver port cmd
+# qserver -q queue cmd
+#
+# Listen for requests on the specified port and enqueue them for `cmd'.  The
+# second form is only used internally to start a child work process.  
+#
+# Requests use a comma as the field delimiter for words:
+#
+#   Example: host1$ qserver 1301 "/bin/bash -c"
+#            host2$ echo "touch,timestamp" | nc -q 0 host1 1301
+#
+netcat=/usr/bin/nc
+
+lock() {
+  local s=1
+  until (set -o noclobber; echo $$ > $1.lock) 2> /dev/null; do
+    echo "qserver $$: lock $1: waiting on $(cat $1.lock) for $s sec..."
+    sleep $s
+    let "s *= 2"
+  done
+  trap "rm -f $1.lock; exit" INT TERM EXIT
+}
+
+unlock() {
+  rm -f $1.lock
+}
+
+queueRunning() {
+  [[ -e $1.pid ]] && ls /proc | grep $(cat $1.pid) > /dev/null
+}
+
+removeFirst() {
+  lock $1
+  sed -i 1d $1
+  unlock $1
+}
+
+cleanup() {
+  echo "$(date) qserver: trap. Exiting."
+  rm -f $queue*; pkill $netcat; exit
+}
+
+if [ $1 != "-q" ]; then
+  port=$1
+  cmd=$2
+  queue=/tmp/tmp$$.queue
+  trap cleanup INT TERM
+  echo -e "\n$(date): $0\ncmd: $cmd\nlistening on port $port, pid $$"
+  while true; do
+    req=$($netcat -l -p $port)
+    echo -e "\n$(date): qserver $$ got request:\n$req"
+    lock $queue
+    if [ -s $queue ] && queueRunning $queue; then
+      echo "$req" >> $queue
+      unlock $queue
+    else
+      echo "$req" >> $queue
+      unlock $queue
+      $0 -q $queue "$cmd" &
+    fi
+  done
+else
+  queue=$2
+  cmd=$3
+  echo $$ > $queue.pid
+  echo "qserver $$: work process started on queue $queue"
+  while [ -s $queue ]; do
+    IFS=, read -r -a areq < $queue
+    echo -e "qserver $$: calling $cmd with:\n${areq[*]}"
+    $cmd "${areq[@]}"
+    removeFirst $queue
+  done
+  echo -e "qserver $$: $queue cleared, exiting.\n"
+  rm -f $queue.pid
+fi
+

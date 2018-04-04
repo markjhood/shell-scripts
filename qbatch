@@ -1,0 +1,97 @@
+#!/bin/bash
+usage()
+{
+  cat <<EOF
+usage: qbatch queue cmd [args ...]
+       qbatch -k queue
+       qbatch -r queue
+
+Enqueue a command for execution in the background.  The command is appended to
+the given queue and will be started after any preceding commands are executed
+in order.
+
+The 'queue' parameter is the pathname of an ordinary file to hold the commands
+and serve as the queue.  If there is no background work process managing the
+queue then one will be started.
+
+The -k variant kills the background work process associated with the queue, if
+any; existing queue entries are retained.  The -r option is used to restart a
+background work process on existing queue entries.
+EOF
+}
+
+[[ $# -lt 2 ]] && usage && exit 1
+source /public/bin/queueFuns
+
+enqueue() {
+  # Use comma as IFS to handle whitespace in filesystem paths.
+  local IFS=,  
+  echo "$*" >> $queue
+}
+
+queueJob() {
+  # Queue job and start the work process if necessary.
+  echo -e "$0 using queue: $queue\nadding job: $*\n"
+  lock $queue
+  if [ -s $queue ] && queueRunning $queue; then
+    enqueue "$@"
+    unlock $queue
+  else
+    enqueue "$@"
+    unlock $queue
+    runQueue $queue &
+    echo $! > $queue.pid
+    echo -e "work process $! started on queue $queue\n"
+  fi
+}
+
+runQueue() {
+  # The background work process.
+  exec < /dev/null >> $queue.log 2>&1
+  trap "date; echo qbatch $queue: got SIGHUP; exit" HUP
+  while [ -s $queue ]; do
+    IFS=, read -r -a cmd < $queue
+    echo -e "\n$(date) qbatch $queue:\nrunning ${cmd[*]}\n"
+    "${cmd[@]}"  # array expansion to words deals with shell metacharacters
+    removeFirst $queue
+  done
+  echo -e "qbatch: queue $queue cleared; exiting.\n"
+  rm -f $queue.pid
+}
+
+killQueue() {
+  if queueRunning $queue; then
+    echo "killing queue $queue"
+    killTree -HUP $(cat $queue.pid)
+    rm -f $queue.pid
+  else
+    echo "Queue work process is not running."
+    usage
+  fi 
+}
+
+restartQueue() {
+  if [ -s $queue ] && ! queueRunning $queue; then
+    echo -e "restarting queue $queue"
+    runQueue $queue &
+    echo $! > $queue.pid
+  else
+    echo "Queue must exist and queue work process cannot already be running."
+    usage
+  fi 
+}
+
+case "$1" in
+  (-k)
+    queue=$2
+    killQueue
+    ;;
+  (-r)
+    queue=$2
+    restartQueue
+    ;;
+  (*)
+    queue=$1; shift
+    queueJob "$@"
+    ;;
+esac

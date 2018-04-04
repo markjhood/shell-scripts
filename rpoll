@@ -1,0 +1,54 @@
+#!/bin/bash
+usage() {
+  cat <<EOF
+  usage: rpoll interval duration command args
+
+  Call "command args" every "interval" minutes or so for about "duration"
+  minutes.  Exit when "command args" returns a successful error status,
+  otherwise return failure after "duration" minutes passed.  
+
+  The actual interval is randomly distributed in "interval" +/- 33% (1/3).
+  "interval" must be greater than 0 minutes.
+EOF
+}
+
+[[ $# -lt 3 ]] && usage && exit 1
+[[ $1 -lt 1 ]] && usage && exit 1
+
+interval=$1
+duration=$2
+cmd=$3
+shift 3
+
+echo -e "$(date)\nrpoll $$: $interval $duration $cmd $*"
+echo "polling every $interval min. or so for about $duration min. total."
+
+# get times in seconds
+let "pollSecs = interval * 60"
+let "durationSecs = duration * 60"
+
+# poll at random intervals around $pollSecs +- 1/3
+let "pollSecsBase = interval * 40"
+let "randRange = 2 * pollSecs / 3"
+
+secToHrMinSec() {
+  echo "$(($1 / 3600)) hr $(($1 % 3600 / 60)) min $(($1 % 60)) sec"
+}
+
+# seed the random number generator
+RANDOM=$$
+
+while [ $SECONDS -lt $durationSecs ]; do
+  let "sleepTime = pollSecsBase + $RANDOM % randRange"
+  let "timeLeft = durationSecs - $SECONDS"
+  [[ $sleepTime -gt $timeLeft ]] && break;
+
+  echo "rpoll $$: sleeping $(secToHrMinSec $sleepTime)."
+  sleep $sleepTime
+
+  echo -e "\n$(date)\nrpoll $$: calling $cmd\n"
+  $cmd "$@" && exit 0
+done
+
+echo -e "rpoll $$: no successful run in $(secToHrMinSec $SECONDS).\n"
+exit 1

@@ -1,0 +1,78 @@
+#!/bin/bash
+
+queueRunning() {
+  [[ -e $1.pid ]] && ls /proc | grep $(cat $1.pid) > /dev/null
+}
+
+lock() {
+  # Lock file $1 from concurrent update.
+  # noclobber enables using a single command for test and lock.
+  local s=1
+  until (set -o noclobber; echo $$ > $1.lock) 2> /dev/null; do
+    echo "$0 $$: lock $1: waiting for $s sec..."
+    sleep $s
+    let "s *= 2"
+  done
+  trap "rm -f $1.lock; exit" INT TERM EXIT
+}
+
+unlock() {
+  rm -f $1.lock
+}
+
+removeFirst() {
+  lock $1
+  sed -i 1d $1
+  unlock $1
+}
+
+requestNotify() {
+  # Append the name of pipe $2 to the queue (ordinary file) $1.
+  # The notifying process associated with the queue will send data through the
+  # named pipe to the process waiting for the notification.
+  lock $1
+  echo $2 >> $1
+  unlock $1
+}
+
+deleteNotify() {
+  # Delete named pipe $2 from the specified queue $1.
+  if [ ! -e $1 ] || [ -z $2 ]; then return; fi
+  lock $1
+  sed -i /$(tr / . <<<$2)/d $1
+  unlock $1
+}
+
+sendNotify() {
+  # Send message $2 to the first pipe in queue $1, then remove the pipe from
+  # the queue.
+  local pipe
+  if [ -s $1 ]; then
+    read pipe < $1
+    if [ -p $pipe ]; then
+      echo $2 > $pipe
+    else
+      echo "$$: $pipe: this is not a pipe."
+    fi
+    removeFirst $1
+  fi
+}
+
+killTree() {
+  # killTree -sig pid
+  # Kills entire process tree rooted by $2 with signal $1.
+  local sig=$1
+  local pid=$2
+  local child
+
+  # Stop parent to prevent further children, then kill children.
+  kill -STOP $pid  
+  for child in $(ps -o pid --no-headers --ppid $pid); do
+    killTree $sig $child 
+  done
+
+  # Kill parent, but allow it to respond to the signal first.
+  kill -CONT $pid
+  echo "Killing pid $pid with $sig."
+  kill $sig $pid
+}

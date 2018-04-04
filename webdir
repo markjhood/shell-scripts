@@ -1,0 +1,105 @@
+#! /bin/bash
+usage() {
+    cat <<EOF
+usage: $(basename $0) directory port [title]
+       $(basename $0) -stop port
+
+Accepts http connections from web browsers on the given port and serves up the
+files in the specified directory.  The script runs in an infinite loop until
+killed with SIGINT.
+
+Killing this script while it is running in the background will leave a netcat
+subprocess running.  The second form of the command above should be used to
+stop this script when it is running asynchronously.
+EOF
+}
+
+# SlugOS. The -q 0 flag causes netcat to quit after EOF on stdin.
+nc=/opt/bin/netcat-nc
+ncArgs="-v -q 0 -l -p"
+
+# OS X.
+# nc=/usr/bin/nc
+# ncArgs="-v -l"
+
+title="Directory"
+[[ $# -lt 2 ]] && usage && exit 1
+[[ $# -gt 2 ]] && title="$3"
+
+TMP=/tmp/webdir.$2.tmp
+RSP=/tmp/webdir.$2.rsp
+pidFile=/tmp/webdir.$2.pid
+
+if [ "$1" == "-stop" ]; then
+  if [ -e $pidFile ]; then
+    # Kill the script process first and then the netcat subprocess.
+    s=$(cat $pidFile)
+    n=$(ps -ef | grep "$s.*$nc"  | grep -v grep | tail -n 1 | awk '{print $2}')
+    kill $s; sleep 1; kill $n; sleep 1
+    rm -f $pidFile $TMP $RSP
+  fi
+  exit 0
+else
+  [[ ! -d "$1" ]] && echo "$1: not a directory" && usage && exit 1
+  [[ -e $pidFile ]] && echo "already running on port $2" && exit 1
+fi
+
+# Next regexp and replacement for sed parses the output of 'ls -ogh' into
+# three parts, retaining column formatting and adding markup.
+lsRE='\([^ ]* *[^ ]*\)\( *[^ ]* *[^ ]* *[^ ]* *[^ ]* \)\(.*\)'
+lsRep='\2<a href="\3"><b>\3</b></a> <a href="t?\3"><i>tail</i></a>'
+
+listdir() {
+  # Output a directory listing filtered to allow readable plain files only.
+  # Use 'ls -ogh' on the word expansion of the array of allowed file names.
+  files=()
+  for file in *; do
+    [[ -f "$file" ]] && [[ -r "$file" ]] && files+=("$file")
+  done
+  echo -e "<html><head><title>$title</title></head>"
+  echo -e "<body><pre style="font-size:200%">"
+  if [ -z "$files" ]; then
+    echo -e "No available files."
+  else
+    /bin/ls -ogh "${files[@]}" | sed "s:$lsRE:$lsRep:"
+  fi
+  echo -e "</pre></body></html>"
+}
+
+respond() {
+  # Read a request from a client and build the response in file $TMP.  Write
+  # the complete response to fifo $RSP and remove the temp file when done.
+  read cmd f rest
+  echo -e "$(date): $cmd ""$f"" $rest" | tr -d '\r'
+  f=$(sed -e 's:/::g' -e 's/%20/ /g' -e 's/%5B/[/g' -e 's/%5D/]/g' <<< "$f")
+  listf="cat"; [[ "${f:0:2}" == "t?" ]] && f="${f#t?}" && listf="tail -n 30"
+  exec > $TMP
+  if [ -z "$f" ]; then
+    echo -e "HTTP/1.1 200 OK\r\n"
+    listdir
+  elif [ -f "$f" ] && [ -r "$f" ]; then
+    echo -e "HTTP/1.1 200 OK\r\n"
+    $listf "$f"
+  else
+    echo -e "HTTP/1.1 404 Not Found\r\n"
+    echo -e "<html><h1>404 - Not Found</h1><html>\n"
+  fi
+  cat $TMP > $RSP
+  rm -f $TMP
+}
+
+cd $1
+umask 0077
+mkfifo $RSP
+trap "rm -f $pidFile $TMP $RSP; exit" INT
+
+echo $$ > $pidFile
+echo -e "$(date): $0 (pid $$)\nserving $1 as \"$title\" on port $2\n"
+
+while true; do
+  # In the pipeline below, cat blocks until a response is written to the fifo,
+  # while netcat listens on port $2.  After netcat receives a request, the
+  # response is passed to netcat's stdin through the fifo and out to the
+  # client.  
+  cat $RSP | $nc $ncArgs $2 | respond
+done
