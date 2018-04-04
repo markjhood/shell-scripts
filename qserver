@@ -1,5 +1,4 @@
 #!/bin/bash
-# *** needs work for SlugOS!! ***
 # qserver port cmd
 # qserver -q queue cmd
 #
