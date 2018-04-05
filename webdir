@@ -100,6 +100,7 @@ while true; do
   # In the pipeline below, cat blocks until a response is written to the fifo,
   # while netcat listens on port $2.  After netcat receives a request, the
   # response is passed to netcat's stdin through the fifo and out to the
-  # client.  
+  # client.  This construct is not original to me (mjh) but unfortunately I
+  # haven't been able to find the definitive author.
   cat $RSP | $nc $ncArgs $2 | respond
 done
